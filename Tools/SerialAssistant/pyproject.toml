@@ -1,0 +1,8 @@
+[project]
+name = "serial-assistant"
+version = "1.0.0"
+description = "串口助手 - STM32 开发调试工具"
+requires-python = ">=3.9"
+dependencies = [
+    "pyserial>=3.5",
+]

@@ -1,0 +1,10 @@
+# PlatformIO 编译缓存
+.pio/
+.vscode/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
