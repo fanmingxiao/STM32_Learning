@@ -21,6 +21,9 @@
 | [11](#11-touch-relay-oled-触摸按键与继电器控制显示) | 触摸按键与继电器控制显示 | OLED实时刷新两个外部继电器的工作状态 | SWJ/JTAG引脚重映射释放, 单字节与全角中文字模混排 | **已就绪** | [main.c](Cases/11_Touch_Relay_OLED/src/main.c) |
 | [12](#12-stepper-motor-oled-步进电机与oled角度显示) | 步进电机与OLED角度显示 | 外部四路按键精细干预步进电机的八拍时序旋转及正负角度累加 | 减速步进电机驱动, 时序控制, OLED数值覆盖刷新 | **已就绪** | [main.c](Cases/12_Stepper_Motor_OLED/src/main.c) |
 | [13](#13-touch-uart-oled-串口通讯触摸按键显示) | 串口通讯触摸按键显示 | 四路触摸按键发送字母A/B/C/D，OLED实时显示串口收发数据 | USART1中断收发, TTP223触摸按键, OLED中文字模 | **已就绪** | [main.c](Cases/13_Touch_UART_OLED/src/main.c) |
+| [14](#14-adc-dma-oled-多通道双路adc与dma采样显示) | ADC与DMA多通道采样显示 | 使用DMA无感采集PA4与PA5电压并实时显示于OLED | ADC扫描, DMA循环读取, OLED参数刷新 | **已就绪** | [main.c](Cases/14_ADC_DMA_OLED/src/main.c) |
+| [15](#15-joystick-oled-摇杆模块oled显示) | 摇杆模块OLED显示 | ADC+DMA读取摇杆X/Y轴，GPIO读取按键，OLED显示 | ADC扫描, DMA循环, GPIO上拉输入 | **已就绪** | [main.c](Cases/15_Joystick_OLED/src/main.c) |
+| [16](#16-mp3-player-my1690-16s-mp3播放器) | MY1690-16S MP3播放器 | 通过USART3串口控制MY1690芯片播放TF卡音频 | USART3串口协议, 按键控制, OLED状态显示 | **已就绪** | [main.c](Cases/16_MP3_Player/src/main.c) |
 
 ## 2. 详细案例记录
 
@@ -477,4 +480,64 @@ TM1640_WriteByte(data);  // 位掩码
 2. **串口中断接收**: 使用 `HAL_UART_Receive_IT` 开启单字节中断接收，在 `HAL_UART_RxCpltCallback` 回调中将收到的字节累积到 RX 显示缓冲区，忽略回车换行符。缓冲区满时从头覆盖。
 3. **OLED 四行布局**: 第一行 "Young Talk"（英文居中）、第二行 "串口调试"（中文居中，使用 Python 生成的 16x16 字模）、第三行 "TX:" 后跟已发送的字符序列、第四行 "RX:" 后跟已接收的字符序列。每次刷新先清空再重绘，防止残影。
 4. **心跳指示**: PC13 板载 LED 在主循环中翻转，50ms 间隔，作为系统运行状态指示。
+
+---
+
+### 14-ADC DMA OLED 多通道双路ADC与DMA采样显示
+
+- **目录**: `Cases/14_ADC_DMA_OLED/`
+- **功能**: 使用硬件 ADC1 配合 DMA 进行多通道（PA4, PA5）不间断的数据采集，主程序直接读取内存数组并将电位器及光敏电阻的数值实时刷新在 OLED 屏幕上。
+- **知识点**: ADC 连续转换与扫描模式配置、DMA 外设到内存循环模式映射、ADC+DMA 硬件底层自动化流转、浮点数分解与 OLED 格式化显示。
+- **引脚**:
+  - ADC1_IN4: PA4 (外部滑动变阻器/电位器)
+  - ADC1_IN5: PA5 (外部光敏电阻)
+  - I2C1 SCL: PB6, I2C1 SDA: PB7
+  - 板载 LED: PC13 (心跳指示)
+
+**核心功能**:
+1. **多通道扫描**: 开启 `ScanConvMode` 与 `ContinuousConvMode`，将通道 4 和 5 编入转换序列 `Rank 1` 和 `Rank 2`，实现双路信号连续采集。
+2. **DMA解放CPU**: 开启 `DMA_CIRCULAR` 循环模式。在底层调用 `HAL_ADC_Start_DMA` 后，ADC产生的数据无需调用 `HAL_ADC_PollForConversion` 也不需要占用中断，硬件会自动把两个通道的数据顺序转移至内存的 `uint16_t adc_buf[2]` 数组中，主循环只需定期读取数组即可获得最新数值。
+3. **浮点换算分离**: 为避免 `newlib-nano` 下直接 `%f` 打印浮点造成的潜在错误，采取将换算的电压 `vol = val * 3.3 / 4096.0` 拆分成整数部分和小数部分分别处理，使用 `%d.%02d` 打印到字符串。
+4. **OLED实时刷新**: 利用 `OLED_ShowString` 在屏幕左右两侧分别格式化显示 PA4 和 PA5 获取的12位采集原始量及其转换后的直流电压参数。
+
+---
+
+### 15-Joystick OLED 摇杆模块OLED显示
+
+- **目录**: `Cases/15_Joystick_OLED/`
+- **功能**: 使用 ADC1 + DMA 连续采集摇杆模块的 X/Y 轴模拟信号，同时通过 GPIO 读取摇杆按压微动开关状态，在 OLED 屏幕上四行显示。
+- **知识点**: 与案例14相同的 ADC+DMA 架构，增加了 GPIO 上拉输入读取按键状态。
+- **引脚**:
+  - ADC1_IN6: PA6 (摇杆 X 轴)
+  - ADC1_IN7: PA7 (摇杆 Y 轴)
+  - 摇杆按键: PB2 (上拉输入，按下为低电平)
+  - I2C1 SCL: PB6, I2C1 SDA: PB7
+  - 板载 LED: PC13 (心跳指示)
+
+**核心功能**:
+1. **双通道 ADC+DMA**: 与案例14架构一致，使用 `DMA_CIRCULAR` 模式让 ADC1 的 Channel 6 和 Channel 7 的采样数据自动写入内存缓冲数组。
+2. **GPIO 按键读取**: PB2 配置为上拉输入，摇杆微动开关按下时接地产生低电平，松开时为高电平。
+3. **OLED 四行布局**: 第一行 "Young Talk"，第二行 X 轴数值，第三行 Y 轴数值，第四行按钮状态（Pressed/Released）。
+
+---
+
+### 16-MP3 Player MY1690-16S MP3播放器
+
+- **目录**: `Cases/16_MP3_Player/`
+- **功能**: 通过 USART3 串口控制板载 MY1690-16S 语音芯片播放 TF 卡中的 MP3/WAV 音频文件，四路按键控制播放/暂停/切歌/音量，OLED 显示正在播放状态、曲目编号和音量等级。
+- **知识点**: MY1690-16S 串口协议（帧格式 `7E LEN CMD [PARAM] SM EF`，校验码为 XOR）、USART3 配置（9600 波特率）、按键边缘检测与消抖。
+- **引脚**:
+  - PB10 (USART3_TX) -> TFMUSIC_RX
+  - PB11 (USART3_RX) -> TFMUSIC_TX
+  - PA0: 按键 A (播放/暂停)
+  - PA1: 按键 B (下一曲)
+  - PA2: 按键 C (上一曲)
+  - PA3: 按键 D (音量加, 循环 0→30)
+  - I2C1 SCL: PB6, I2C1 SDA: PB7
+  - 板载 LED: PC13 (心跳指示)
+
+**核心功能**:
+1. **MY1690 协议驱动层**: 封装了无参数/单参数/双参数三种帧发送函数，自动计算 XOR 校验码。支持播放、暂停、上下曲、停止、音量设置、指定曲目播放、循环模式设置等全套指令。
+2. **四键控制**: PA0 播放/暂停切换、PA1 下一曲、PA2 上一曲、PA3 音量加（5级步进循环），均带下降沿检测与 20ms 消抖。
+3. **OLED 状态显示**: 四行布局显示标题、播放状态 (Playing/Paused)、当前曲目编号和音量等级。
 
