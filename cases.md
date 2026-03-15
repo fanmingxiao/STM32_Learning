@@ -27,6 +27,7 @@
 | [17](#17-ch376-usb-disk-usb磁盘读写) | CH376 USB磁盘读写 | 通过SPI驱动CH376模块进行U盘的检测、挂载与文件读写操作 | CH376 SPI通讯, FAT文件系统操作, USB Host | **已就绪** | [main.c](Cases/17_CH376_USB_Disk/src/main.c) |
 | [18](#18-touch-servo-oled-触摸按键舵机控制) | 触摸按键舵机控制 | 四路触摸按键控制舵机转动到指定角度 | TIM2 PWM, 软件I2C, 舵机驱动 | **已就绪** | [main.c](Cases/18_Touch_Servo_OLED/src/main.c) |
 | [19](#19-watchdog-oled-看门狗演示) | 看门狗演示 | 演示独立看门狗和窗口看门狗的工作原理 | IWDG, WWDG, OLED显示 | **已就绪** | [main.c](Cases/19_Watchdog_OLED/src/main.c) |
+| [20](#20-矩阵键盘扫描) | 4x4矩阵键盘扫描 | 扫描4x4阵列键盘，OLED显示按键值，串口输出(0-F) | GPIO行列扫描, OLED显示, 键盘消抖, USART1 | **已就绪** | [main.c](Cases/20_Matrix_Keyboard/src/main.c) |
 
 ## 2. 详细案例记录
 
@@ -652,3 +653,141 @@ uint16_t ccr = 500 + angle * 11.11;
 | 6 | 松开 B 键 | 持续喂狗 | 终止一切计时 |
 | 7 | 按住 B 键 2秒 | 倒计时 → Reset! | UI 倒计时完毕后立刻启动物理看门狗复位 |
 
+
+
+---
+
+### 20-矩阵键盘扫描
+
+- **目录**: `Cases/20_Matrix_Keyboard/`
+- **功能**: 扫描 4x4 矩阵键盘，OLED 实时显示按键值，并通过串口输出对应的十六进制值 (0-F)。
+- **知识点**: GPIO 行列扫描法、矩阵键盘原理、OLED 显示、按键消抖、USART1 串口输出。
+- **引脚**:
+  - 行输入 (上拉): PA0(1号), PA1(2号), PA2(3号), PA3(4号)
+  - 列输出 (推挽): PA4(a口), PA5(b口), PA6(c口), PA7(d口)
+  - OLED I2C: PB6(SCL), PB7(SDA)
+  - 串口 TX: PA9 (USART1_TX)
+  - 串口 RX: PA10 (USART1_RX)
+  - 板载 LED: PC13 (心跳指示)
+
+**键盘映射表**:
+```
+         a(PA4)  b(PA5)  c(PA6)  d(PA7)
+1(PA0)     0       1       2       3
+2(PA1)     4       5       6       7
+3(PA2)     8       9       A       B
+4(PA3)     C       D       E       F
+```
+
+**扫描原理**:
+1. **行扫描法 (逐列扫描)**: 依次将每一列设为低电平，其他列设为高电平
+2. **读取行状态**: 读取所有行引脚的状态，如果某行为低电平，说明该行与当前列交叉的按键被按下
+3. **按键消抖**: 检测到按键后延时消抖，确认按键有效后再输出
+4. **等待释放**: 输出按键值后等待按键释放，防止重复触发
+
+**核心代码**:
+
+```c
+// 行引脚定义 (输入上拉)
+#define ROW_PORT GPIOA
+#define ROW_PINS (GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3)
+
+// 列引脚定义 (推挽输出)
+#define COL_PORT GPIOA
+#define COL_PINS (GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7)
+
+// 键盘映射表
+const char KEY_MAP[4][4] = {
+    {'0', '1', '2', '3'},
+    {'4', '5', '6', '7'},
+    {'8', '9', 'A', 'B'},
+    {'C', 'D', 'E', 'F'}
+};
+
+/**
+ * @brief 扫描矩阵键盘
+ * @return 按键字符，无按键返回 '\0'
+ */
+char MatrixKey_Scan(void)
+{
+    char key = '\0';
+
+    for (uint8_t col = 0; col < 4; col++)
+    {
+        // 所有列设为高电平
+        HAL_GPIO_WritePin(COL_PORT, COL_PINS, GPIO_PIN_SET);
+
+        // 当前列设为低电平
+        HAL_GPIO_WritePin(COL_PORT, COL_PIN_ARRAY[col], GPIO_PIN_RESET);
+        HAL_Delay(1);  // 等待电平稳定
+
+        // 检测哪一行被按下 (低电平表示按下)
+        for (uint8_t row = 0; row < 4; row++)
+        {
+            if (HAL_GPIO_ReadPin(ROW_PORT, (GPIO_PIN_0 << row)) == GPIO_PIN_RESET)
+            {
+                key = KEY_MAP[row][col];
+
+                // 等待按键释放 (消抖)
+                while (HAL_GPIO_ReadPin(ROW_PORT, (GPIO_PIN_0 << row)) == GPIO_PIN_RESET)
+                {
+                    HAL_Delay(10);
+                }
+                HAL_Delay(10);
+
+                return key;
+            }
+        }
+    }
+
+    return key;
+}
+```
+
+**GPIO 初始化配置**:
+
+```c
+// PA0-PA3: 行输入，上拉电阻
+GPIO_InitStruct.Pin = ROW_PINS;
+GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+GPIO_InitStruct.Pull = GPIO_PULLUP;
+HAL_GPIO_Init(ROW_PORT, &GPIO_InitStruct);
+
+// PA4-PA7: 列输出，推挽
+HAL_GPIO_WritePin(COL_PORT, COL_PINS, GPIO_PIN_SET);
+GPIO_InitStruct.Pin = COL_PINS;
+GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+HAL_GPIO_Init(COL_PORT, &GPIO_InitStruct);
+```
+
+**功能特点**:
+1. **硬件优化**: 使用 8 个 GPIO 实现 16 个按键的检测，节省引脚资源
+2. **OLED 实时显示**: 按键值实时显示在 OLED 屏幕上，居中显示当前按键
+3. **软件消抖**: 采用延时消抖法，检测和释放时都进行消抖处理
+4. **串口输出**: 按键值通过 USART1 输出到串口助手，波特率 115200
+5. **心跳指示**: PC13 LED 持续闪烁，指示程序正常运行
+6. **防重复触发**: 检测到按键后等待释放才返回，避免一次按下多次触发
+
+**OLED 显示内容**:
+```
++----------------+
+| Matrix Keyboard|
+|                |
+|   Press Key:   |
+|                |
+|       5        |  <-- 按下的按键值
+|                |
++----------------+
+```
+
+**串口输出示例**:
+```
+================================
+4x4 Matrix Keyboard Test
+Press any key (0-F)...
+================================
+Key Pressed: 5
+Key Pressed: A
+Key Pressed: F
+```
